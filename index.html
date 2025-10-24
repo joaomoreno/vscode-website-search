@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>WebAssembly Search Demo</title>
+	<style>
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+			max-width: 800px;
+			margin: 20px auto;
+			padding: 15px;
+			background-color: #1e1e1e;
+			color: #cccccc;
+			font-size: 14px;
+		}
+
+		h1 {
+			color: #007acc;
+			margin-bottom: 8px;
+			font-size: 24px;
+		}
+
+		.description {
+			color: #999;
+			margin-bottom: 20px;
+			font-size: 13px;
+		}
+
+		.search-container {
+			margin-bottom: 20px;
+		}
+
+		label {
+			display: block;
+			margin-bottom: 8px;
+			font-weight: 600;
+			font-size: 14px;
+		}
+
+		input[type="text"] {
+			width: 100%;
+			padding: 10px;
+			font-size: 14px;
+			border: 1px solid #3c3c3c;
+			background-color: #252526;
+			color: #cccccc;
+			border-radius: 4px;
+			box-sizing: border-box;
+		}
+
+		input[type="text"]:focus {
+			outline: 2px solid #007acc;
+			outline-offset: 2px;
+		}
+
+		.highlight {
+			background-color: #f9a825;
+			color: #000;
+			font-weight: 600;
+			padding: 1px 0;
+		}
+
+		.results {
+			margin-top: 20px;
+		}
+
+		.result-item {
+			background-color: #252526;
+			border: 1px solid #3c3c3c;
+			border-radius: 4px;
+			padding: 10px;
+			margin-bottom: 10px;
+		}
+
+		.result-title {
+			color: #007acc;
+			font-weight: 600;
+			margin-bottom: 4px;
+			font-size: 14px;
+		}
+
+		.result-title a {
+			color: #007acc;
+			text-decoration: none;
+		}
+
+		.result-title a:hover {
+			text-decoration: underline;
+		}
+
+		.result-title .match-count {
+			color: #cccccc;
+			font-weight: normal;
+			font-size: 12px;
+			background-color: #3c3c3c;
+			padding: 2px 6px;
+			border-radius: 10px;
+			margin-left: 8px;
+		}
+
+		.result-url {
+			color: #608b4e;
+			font-size: 12px;
+			margin-bottom: 6px;
+		}
+
+		.result-snippet {
+			color: #999;
+			font-size: 13px;
+			line-height: 1.4;
+			margin-top: 6px;
+		}
+
+		.status {
+			padding: 8px;
+			border-radius: 4px;
+			margin-bottom: 15px;
+			font-size: 13px;
+		}
+
+		.status.loading {
+			background-color: #264f78;
+			border: 1px solid #007acc;
+		}
+
+		.status.error {
+			background-color: #5a1d1d;
+			border: 1px solid #f48771;
+			color: #f48771;
+		}
+
+		.status.success {
+			background-color: #1e5e1e;
+			border: 1px solid #4ec9b0;
+		}
+
+		.no-results {
+			color: #999;
+			font-style: italic;
+			padding: 20px;
+			text-align: center;
+		}
+
+		.controls {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			margin-top: 10px;
+		}
+
+		.category-section {
+			margin-bottom: 20px;
+		}
+
+		.category-title {
+			color: #007acc;
+			border-bottom: 1px solid #3c3c3c;
+			padding-bottom: 6px;
+			margin-bottom: 10px;
+			font-size: 18px;
+		}
+	</style>
+</head>
+
+<body>
+	<h1>WebAssembly Search Demo</h1>
+	<p class="description">
+		This demo loads the Rust-based WebAssembly search library and allows you to search through indexed documents.
+	</p>
+
+	<div id="status" class="status loading">Loading WebAssembly module...</div>
+
+	<div class="search-container">
+		<label for="searchInput">Search Query:</label>
+		<input type="text" id="searchInput" placeholder="Enter search terms..." disabled aria-label="Search query input">
+	</div>
+
+	<div id="results" class="results"></div>
+
+	<script type="module">
+		// Import the WebAssembly module
+		import init, { search } from './pkg/search.js';
+
+		const statusEl = document.getElementById('status');
+		const searchInput = document.getElementById('searchInput');
+		const resultsEl = document.getElementById('results');
+
+		let searchTimeout = null;
+
+		// Initialize the WebAssembly module
+		async function initialize() {
+			try {
+				await init();
+				statusEl.textContent = 'Ready! Start typing to search.';
+				statusEl.className = 'status success';
+				searchInput.disabled = false;
+				searchInput.focus();
+			} catch (error) {
+				statusEl.textContent = `Error loading WebAssembly module: ${error.message}`;
+				statusEl.className = 'status error';
+				console.error('Failed to initialize WASM:', error);
+			}
+		}
+
+		// Perform search with debouncing
+		function performSearch() {
+			// Clear previous timeout
+			if (searchTimeout) {
+				clearTimeout(searchTimeout);
+			}
+
+			const query = searchInput.value.trim();
+
+			if (!query) {
+				resultsEl.innerHTML = '';
+				statusEl.textContent = 'Ready! Start typing to search.';
+				statusEl.className = 'status success';
+				return;
+			}
+
+			// Debounce search by 10ms
+			searchTimeout = setTimeout(() => {
+				// Set max results to 10 per category
+				const maxResults = 1000000; // This will be filtered to 10 per category later
+
+				try {
+					statusEl.textContent = `Searching for "${query}"...`;
+					statusEl.className = 'status loading';
+
+					// Call the WASM search function
+					const startTime = performance.now();
+					const resultsJson = search(query, maxResults);
+					const endTime = performance.now();
+					const searchTime = (endTime - startTime).toFixed(2);
+
+					// Parse results
+					const results = JSON.parse(resultsJson);
+
+					// Display results
+					displayResults(results, query, searchTime);
+
+					statusEl.textContent = `Found ${results.length} result(s) in ${searchTime}ms`;
+					statusEl.className = 'status success';
+				} catch (error) {
+					statusEl.textContent = `Search error: ${error.message}`;
+					statusEl.className = 'status error';
+					console.error('Search failed:', error);
+					resultsEl.innerHTML = '';
+				}
+			}, 10);
+		}
+
+		// Display search results
+		function displayResults(results, query, searchTime) {
+			if (results.length === 0) {
+				resultsEl.innerHTML = `
+                    <div class="no-results">
+                        No results found for "${escapeHtml(query)}".
+                    </div>
+                `;
+				return;
+			}
+
+			const queryTerms = query.toLowerCase().split(/\s+/).filter(term => term.length > 0);
+
+			// Group results by category
+			const resultsByCategory = {};
+			results.forEach(result => {
+				const category = result.category || 'Other';
+				if (!resultsByCategory[category]) {
+					resultsByCategory[category] = [];
+				}
+				resultsByCategory[category].push(result);
+			});
+
+			// Define the order of categories to display
+			const categoryOrder = ['docs', 'updates', 'remote', 'blogs'];
+
+			// Add any other categories that aren't in the predefined order
+			const allCategories = Object.keys(resultsByCategory);
+			const otherCategories = allCategories.filter(cat => !categoryOrder.includes(cat));
+			const displayOrder = [...categoryOrder, ...otherCategories];
+
+			// Generate HTML for each category (max 10 results per category)
+			let categoriesHtml = '';
+			for (const category of displayOrder) {
+				if (resultsByCategory[category]) {
+					// Group results by article title (before the " • " separator)
+					const groupedResults = groupResultsByArticle(resultsByCategory[category]);
+
+					// Convert grouped results to array and sort by match count (descending)
+					const sortedGroupedResults = Object.entries(groupedResults)
+						.sort((a, b) => b[1].matches.length - a[1].matches.length)
+						.slice(0, 50); // Limit to 50 results per category
+
+					const categoryResultsHtml = sortedGroupedResults.map(([articleTitle, articleData], index) => {
+						const url = articleData.url || '';
+						const matchCount = articleData.matches.length;
+						const body = articleData.matches[0].body || ''; // Use body from first match for snippet
+
+						// Create snippet with context around matches
+						const snippet = createSnippet(body, queryTerms);
+
+						// If only one match, show the original title; otherwise show grouped format
+						const displayTitle = matchCount === 1 ?
+							highlightText(articleData.matches[0].originalTitle, queryTerms) :
+							`${highlightText(articleTitle, queryTerms)} <span class="match-count">${matchCount} match${matchCount > 1 ? 'es' : ''}</span>`;
+
+						return `
+                    <div class="result-item" role="listitem">
+                        <div class="result-title">${index + 1}. <a href="https://code.visualstudio.com${url}" target="_blank">${displayTitle}</a></div>
+                        <div class="result-snippet">${snippet}</div>
+                    </div>
+                `;
+					}).join('');
+
+					categoriesHtml += `
+                <div class="category-section">
+                    <h2 class="category-title">${escapeHtml(category)} (${Object.keys(groupedResults).length} article${Object.keys(groupedResults).length !== 1 ? 's' : ''})</h2>
+                    <div role="list" aria-label="Search results in ${escapeHtml(category)} category">
+                        ${categoryResultsHtml}
+                    </div>
+                </div>
+            `;
+				}
+			}
+
+			resultsEl.innerHTML = categoriesHtml;
+		}
+
+		// Group search results by article title (before the " • " separator)
+		function groupResultsByArticle(results) {
+			const grouped = {};
+
+			results.forEach(result => {
+				// Extract the main article title (before the " • " separator)
+				const titleParts = result.title.split(' • ');
+				const articleTitle = titleParts[0] || result.title;
+				const sectionTitle = titleParts[1] || '';
+
+				// Process URL to remove anchor when grouping articles
+				let processedUrl = result.href || '';
+				if (articleTitle !== result.title) {
+					// This is a grouped result, remove the anchor part
+					const hashIndex = processedUrl.indexOf('#');
+					if (hashIndex !== -1) {
+						processedUrl = processedUrl.substring(0, hashIndex);
+					}
+				}
+
+				// If this article isn't in our grouped results yet, add it
+				if (!grouped[articleTitle]) {
+					grouped[articleTitle] = {
+						url: processedUrl,
+						matches: []
+					};
+				}
+
+				// Add this result to the article's matches
+				grouped[articleTitle].matches.push({
+					sectionTitle: sectionTitle,
+					body: result.body,
+					href: result.href,
+					originalTitle: result.title
+				});
+			});
+
+			// Only deduplicate if there are multiple matches for the same article
+			const finalResults = {};
+			for (const [articleTitle, articleData] of Object.entries(grouped)) {
+				if (articleData.matches.length === 1) {
+					// If only one match, don't deduplicate and show the original title
+					finalResults[articleData.matches[0].originalTitle] = {
+						url: articleData.matches[0].href,
+						matches: articleData.matches
+					};
+				} else {
+					// Multiple matches - group under article title
+					// For grouped results, use the processed URL without anchor
+					finalResults[articleTitle] = {
+						url: articleData.url,
+						matches: articleData.matches
+					};
+				}
+			}
+
+			return finalResults;
+		}
+
+		// Create a snippet showing context around matched terms
+		function createSnippet(text, queryTerms, maxLength = 300) {
+			if (!text) return '';
+
+			const lowerText = text.toLowerCase();
+
+			// Find first occurrence of any query term
+			let firstMatchIndex = -1;
+			for (const term of queryTerms) {
+				const index = lowerText.indexOf(term);
+				if (index !== -1 && (firstMatchIndex === -1 || index < firstMatchIndex)) {
+					firstMatchIndex = index;
+				}
+			}
+
+			if (firstMatchIndex === -1) {
+				// No match found, return beginning
+				const snippet = text.substring(0, maxLength);
+				return escapeHtml(snippet) + (text.length > maxLength ? '...' : '');
+			}
+
+			// Extract snippet with context around the match
+			const contextBefore = 80;
+			const contextAfter = maxLength - contextBefore;
+
+			let start = Math.max(0, firstMatchIndex - contextBefore);
+			let end = Math.min(text.length, firstMatchIndex + contextAfter);
+
+			// Adjust to word boundaries
+			if (start > 0) {
+				const spaceIndex = text.lastIndexOf(' ', start);
+				if (spaceIndex > 0 && spaceIndex > start - 20) {
+					start = spaceIndex + 1;
+				}
+			}
+
+			if (end < text.length) {
+				const spaceIndex = text.indexOf(' ', end);
+				if (spaceIndex !== -1 && spaceIndex < end + 20) {
+					end = spaceIndex;
+				}
+			}
+
+			let snippet = text.substring(start, end);
+			const prefix = start > 0 ? '...' : '';
+			const suffix = end < text.length ? '...' : '';
+
+			return prefix + highlightText(snippet, queryTerms) + suffix;
+		}
+
+		// Highlight query terms in text (case-insensitive)
+		function highlightText(text, queryTerms) {
+			if (!text || queryTerms.length === 0) {
+				return escapeHtml(text);
+			}
+
+			// Escape the text first
+			let result = escapeHtml(text);
+
+			// Sort terms by length (longest first) to avoid partial replacements
+			const sortedTerms = [...queryTerms].sort((a, b) => b.length - a.length);
+
+			// Create a map to track positions that have been highlighted
+			const highlighted = new Set();
+
+			// Build an array of {start, end, term} for all matches
+			const matches = [];
+			const lowerText = text.toLowerCase();
+
+			for (const term of sortedTerms) {
+				const lowerTerm = term.toLowerCase();
+				let index = 0;
+
+				while ((index = lowerText.indexOf(lowerTerm, index)) !== -1) {
+					// Check if this position overlaps with existing highlights
+					let overlaps = false;
+					for (let i = index; i < index + term.length; i++) {
+						if (highlighted.has(i)) {
+							overlaps = true;
+							break;
+						}
+					}
+
+					if (!overlaps) {
+						matches.push({ start: index, end: index + term.length, term });
+						for (let i = index; i < index + term.length; i++) {
+							highlighted.add(i);
+						}
+					}
+
+					index++;
+				}
+			}
+
+			// Sort matches by position
+			matches.sort((a, b) => a.start - b.start);
+
+			// Build the highlighted result
+			let highlightedResult = '';
+			let lastIndex = 0;
+
+			for (const match of matches) {
+				// Add text before match
+				highlightedResult += escapeHtml(text.substring(lastIndex, match.start));
+				// Add highlighted match
+				highlightedResult += `<mark class="highlight">${escapeHtml(text.substring(match.start, match.end))}</mark>`;
+				lastIndex = match.end;
+			}
+
+			// Add remaining text
+			highlightedResult += escapeHtml(text.substring(lastIndex));
+
+			return highlightedResult;
+		}
+
+		// Escape HTML to prevent XSS
+		function escapeHtml(text) {
+			const div = document.createElement('div');
+			div.textContent = text;
+			return div.innerHTML;
+		}
+
+		// Event listeners
+		searchInput.addEventListener('input', performSearch);
+
+		// Initialize on load
+		initialize();
+	</script>
+</body>
+
+</html>
