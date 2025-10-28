@@ -81,15 +81,6 @@
 			font-size: 14px;
 		}
 
-		.result-title a {
-			color: #007acc;
-			text-decoration: none;
-		}
-
-		.result-title a:hover {
-			text-decoration: underline;
-		}
-
 		.result-title .match-count {
 			color: #cccccc;
 			font-weight: normal;
@@ -167,45 +158,55 @@
 <body>
 	<h1>WebAssembly Search Demo</h1>
 	<p class="description">
-		This demo loads the Rust-based WebAssembly search library and allows you to search through indexed documents.
+		This demo uses the Rust-based WebAssembly search library to search through indexed documents. The WebAssembly module
+		is only loaded when you start typing.
 	</p>
 
-	<div id="status" class="status loading">Loading WebAssembly module...</div>
+	<div id="status" class="status success">Ready! Start typing to search. WebAssembly module will load on first search.
+	</div>
 
 	<div class="search-container">
 		<label for="searchInput">Search Query:</label>
-		<input type="text" id="searchInput" placeholder="Enter search terms..." disabled aria-label="Search query input">
+		<input type="text" id="searchInput" placeholder="Enter search terms..." aria-label="Search query input">
 	</div>
 
 	<div id="results" class="results"></div>
 
 	<script type="module">
-		// Import the WebAssembly module
-		import init, { search } from './pkg/search.js';
-
 		const statusEl = document.getElementById('status');
 		const searchInput = document.getElementById('searchInput');
 		const resultsEl = document.getElementById('results');
 
 		let searchTimeout = null;
+		let wasmModule = null;
+		let wasmSearch = null;
+		let wasmLoaded = false;
 
-		// Initialize the WebAssembly module
-		async function initialize() {
-			try {
-				await init();
-				statusEl.textContent = 'Ready! Start typing to search.';
-				statusEl.className = 'status success';
-				searchInput.disabled = false;
-				searchInput.focus();
-			} catch (error) {
-				statusEl.textContent = `Error loading WebAssembly module: ${error.message}`;
-				statusEl.className = 'status error';
-				console.error('Failed to initialize WASM:', error);
+		// Load the WebAssembly module
+		async function loadWasmModule() {
+			if (!wasmLoaded) {
+				statusEl.textContent = 'Loading WebAssembly module...';
+				statusEl.className = 'status loading';
+
+				try {
+					// Import the WebAssembly module
+					const { default: init, search } = await import('./pkg/search.js');
+					await init();
+					wasmSearch = search;
+					wasmLoaded = true;
+					statusEl.textContent = 'WebAssembly module loaded! Searching...';
+				} catch (error) {
+					statusEl.textContent = `Error loading WebAssembly module: ${error.message}`;
+					statusEl.className = 'status error';
+					console.error('Failed to initialize WASM:', error);
+					return false;
+				}
 			}
+			return true;
 		}
 
 		// Perform search with debouncing
-		function performSearch() {
+		async function performSearch() {
 			// Clear previous timeout
 			if (searchTimeout) {
 				clearTimeout(searchTimeout);
@@ -215,13 +216,19 @@
 
 			if (!query) {
 				resultsEl.innerHTML = '';
-				statusEl.textContent = 'Ready! Start typing to search.';
+				statusEl.textContent = 'Ready! Start typing to search. WebAssembly module will load on first search.';
 				statusEl.className = 'status success';
 				return;
 			}
 
 			// Debounce search by 10ms
-			searchTimeout = setTimeout(() => {
+			searchTimeout = setTimeout(async () => {
+				// Load WASM module if not already loaded
+				if (!await loadWasmModule()) {
+					resultsEl.innerHTML = '';
+					return;
+				}
+
 				// Set max results to 10 per category
 				const maxResults = 1000000; // This will be filtered to 10 per category later
 
@@ -231,7 +238,7 @@
 
 					// Call the WASM search function
 					const startTime = performance.now();
-					const resultsJson = search(query, maxResults);
+					const resultsJson = wasmSearch(query, maxResults);
 					const endTime = performance.now();
 					const searchTime = (endTime - startTime).toFixed(2);
 
@@ -310,7 +317,8 @@
 
 						return `
                     <div class="result-item" role="listitem">
-                        <div class="result-title">${index + 1}. <a href="https://code.visualstudio.com${url}" target="_blank">${displayTitle}</a></div>
+                        <div class="result-title">${index + 1}. ${displayTitle}</div>
+                        <div class="result-url">${escapeHtml(url)}</div>
                         <div class="result-snippet">${snippet}</div>
                     </div>
                 `;
@@ -340,20 +348,10 @@
 				const articleTitle = titleParts[0] || result.title;
 				const sectionTitle = titleParts[1] || '';
 
-				// Process URL to remove anchor when grouping articles
-				let processedUrl = result.href || '';
-				if (articleTitle !== result.title) {
-					// This is a grouped result, remove the anchor part
-					const hashIndex = processedUrl.indexOf('#');
-					if (hashIndex !== -1) {
-						processedUrl = processedUrl.substring(0, hashIndex);
-					}
-				}
-
 				// If this article isn't in our grouped results yet, add it
 				if (!grouped[articleTitle]) {
 					grouped[articleTitle] = {
-						url: processedUrl,
+						url: result.href,
 						matches: []
 					};
 				}
@@ -378,11 +376,7 @@
 					};
 				} else {
 					// Multiple matches - group under article title
-					// For grouped results, use the processed URL without anchor
-					finalResults[articleTitle] = {
-						url: articleData.url,
-						matches: articleData.matches
-					};
+					finalResults[articleTitle] = articleData;
 				}
 			}
 
@@ -512,10 +506,9 @@
 		}
 
 		// Event listeners
-		searchInput.addEventListener('input', performSearch);
-
-		// Initialize on load
-		initialize();
+		searchInput.addEventListener('input', () => {
+			performSearch();
+		});
 	</script>
 </body>
 
